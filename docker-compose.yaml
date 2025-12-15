@@ -29,6 +29,32 @@ services:
       - "8080:8080"
     depends_on:
       - keycloak_db
+  olap_db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: olap_db
+      POSTGRES_USER: olap_user
+      POSTGRES_PASSWORD: olap_password
+    volumes:
+      - ./postgres-olap-data:/var/lib/postgresql/data
+      - ./backend/olap_seed.sql:/docker-entrypoint-initdb.d/olap_seed.sql
+    ports:
+      - "5434:5432"
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      OLAP_DSN: postgresql://olap_user:olap_password@olap_db:5432/olap_db
+      DEFAULT_CLIENT_ID: client_1
+      KEYCLOAK_ISSUER: http://keycloak:8080/realms/reports-realm
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/reports-realm/protocol/openid-connect/certs
+      KEYCLOAK_AUDIENCE: reports-api
+      CLIENT_ID_CLAIM: preferred_username
+    ports:
+      - "8000:8000"
+    depends_on:
+      - olap_db
   frontend:
     build:
       context: ./frontend
@@ -40,3 +66,54 @@ services:
       REACT_APP_KEYCLOAK_URL: http://localhost:8080
       REACT_APP_KEYCLOAK_REALM: reports-realm
       REACT_APP_KEYCLOAK_CLIENT_ID: reports-frontend
+  airflow-webserver:
+    image: apache/airflow:2.8.0
+    command: webserver
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    ports:
+      - "8081:8080"
+    depends_on:
+      - airflow-db
+      - olap_db
+    user: "${AIRFLOW_UID:-50000}:0"
+  airflow-scheduler:
+    image: apache/airflow:2.8.0
+    command: scheduler
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    depends_on:
+      - airflow-db
+      - olap_db
+    user: "${AIRFLOW_UID:-50000}:0"
+  airflow-db:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - ./postgres-airflow-data:/var/lib/postgresql/data
+    ports:
+      - "5435:5432"
